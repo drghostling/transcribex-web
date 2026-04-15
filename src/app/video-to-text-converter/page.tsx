@@ -58,6 +58,42 @@ const faqs = [
   { question: "Is the video file stored after transcription?", answer: "No. Your video is processed securely and immediately deleted after transcription. We never store your files or transcripts." },
 ];
 
+const jsonLd = {
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "SoftwareApplication",
+      name: "Video to Text Converter",
+      url: `${siteUrl}/video-to-text-converter`,
+      applicationCategory: "UtilitiesApplication",
+      operatingSystem: "Any",
+      offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
+      description: "Free AI video transcription tool supporting MP4, MOV, AVI, MKV, WEBM, and FLV. Get accurate text and SRT subtitles in 50+ languages.",
+      featureList: ["MP4, MOV, AVI, MKV, WEBM, FLV support", "AI transcription with 50+ languages", "Speaker detection", "SRT subtitle export", "Free, no registration"],
+    },
+    {
+      "@type": "BreadcrumbList",
+      itemListElement: [
+        { "@type": "ListItem", position: 1, name: "Home", item: siteUrl },
+        { "@type": "ListItem", position: 2, name: "Video to Text Converter", item: `${siteUrl}/video-to-text-converter` },
+      ],
+    },
+    {
+      "@type": "FAQPage",
+      mainEntity: faqs.map(({ question, answer }) => ({
+        "@type": "Question",
+        name: question,
+        acceptedAnswer: { "@type": "Answer", text: answer },
+      })),
+    },
+  ],
+};
+
 export default function VideoToTextPage() {
-  return <FileToolPage tool={tool} relatedTools={relatedTools} steps={steps} whyPoints={whyPoints} faqs={faqs} />;
+  return (
+    <>
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }} />
+      <FileToolPage tool={tool} relatedTools={relatedTools} steps={steps} whyPoints={whyPoints} faqs={faqs} />
+    </>
+  );
 }

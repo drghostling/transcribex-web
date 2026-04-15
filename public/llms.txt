@@ -1,0 +1,51 @@
+# TranscribeX
+
+> Free AI-powered transcription tools for audio, video, and YouTube content.
+
+TranscribeX is a free online transcription platform that uses AI to convert audio files, video files, and YouTube videos into accurate text. It supports 50+ languages, multi-speaker detection, and SRT subtitle export. No registration or credit card required.
+
+## Tools
+
+### Audio & Video Transcription
+
+- [Audio to Text Converter](https://transcribex.co/audio-to-text-converter): Convert any audio file (MP3, WAV, M4A, FLAC, OGG, AAC, OPUS) to text. Supports 50+ languages, speaker detection, and SRT export.
+- [Video to Text Converter](https://transcribex.co/video-to-text-converter): Transcribe video files (MP4, MOV, AVI, MKV, WEBM, FLV) to accurate text captions and subtitles.
+- [MP3 to Text](https://transcribex.co/mp3-to-text): Transcribe MP3 audio files — podcasts, interviews, voice memos — with 99.8% AI accuracy.
+- [MP4 to Text](https://transcribex.co/mp4-to-text): Convert MP4 video to text transcript or SRT subtitle file. Works with screen recordings, meetings, and tutorials.
+- [M4A to Text](https://transcribex.co/m4a-to-text): Convert M4A audio files (Apple Voice Memos, podcast exports) to text with AI precision.
+- [WAV to Text](https://transcribex.co/wav-to-text): Transcribe WAV audio files with high accuracy. Ideal for call recordings, interviews, and academic lectures.
+- [FLAC to Text](https://transcribex.co/flac-to-text): Convert lossless FLAC audio to text. Best accuracy for studio recordings and archival audio.
+
+### YouTube Tools
+
+- [YouTube to Text](https://transcribex.co/youtube-to-text): Paste any public YouTube URL to get a full text transcript instantly. Supports 50+ languages, multi-speaker detection, SRT subtitle export.
+- [YouTube to MP4](https://transcribex.co/youtube-to-mp4): Download YouTube videos as MP4 files in up to 4K quality. Free, no watermark, no registration.
+- [YouTube Downloader](https://transcribex.co/youtube-downloader): Download YouTube videos and audio in multiple formats: MP4, MP3, WEBM, M4A, OGG.
+
+## Key Features
+
+- AI transcription powered by Claude (Anthropic)
+- 99.8% accuracy on clear audio
+- 50+ supported languages including English, Spanish, French, German, Japanese, Korean, Chinese, Arabic, Portuguese, Turkish
+- Multi-speaker detection with automatic labeling
+- SRT subtitle file export with timestamps
+- Maximum file size: 500 MB
+- Processing is secure — files deleted after transcription
+- Completely free with no registration required
+
+## Use Cases
+
+- Podcast transcription for show notes and SEO
+- Meeting and lecture transcription for notes
+- Subtitle generation for YouTube, TikTok, and social media
+- Research interview transcription
+- Accessibility captioning for videos
+- Content repurposing from audio/video to written format
+- YouTube video content extraction
+
+## About
+
+TranscribeX is built for content creators, journalists, researchers, students, and anyone who needs fast, accurate speech-to-text conversion. All tools are browser-based — no software download required.
+
+Website: https://transcribex.co
+Sitemap: https://transcribex.co/sitemap.xml

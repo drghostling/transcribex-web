@@ -58,6 +58,42 @@ const faqs = [
   { question: "Is my M4A file safe?", answer: "Yes. Files are encrypted during upload, processed securely, and deleted immediately after transcription. We never retain your audio." },
 ];
 
+const jsonLd = {
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "SoftwareApplication",
+      name: "M4A to Text Converter",
+      url: `${siteUrl}/m4a-to-text`,
+      applicationCategory: "UtilitiesApplication",
+      operatingSystem: "Any",
+      offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
+      description: "Free M4A to text converter. Transcribe Apple Voice Memos, podcast exports, and M4A audio files with 99.8% AI accuracy.",
+      featureList: ["M4A transcription", "Apple Voice Memos support", "99.8% AI accuracy", "50+ languages", "Speaker detection", "Free, no registration"],
+    },
+    {
+      "@type": "BreadcrumbList",
+      itemListElement: [
+        { "@type": "ListItem", position: 1, name: "Home", item: siteUrl },
+        { "@type": "ListItem", position: 2, name: "M4A to Text Converter", item: `${siteUrl}/m4a-to-text` },
+      ],
+    },
+    {
+      "@type": "FAQPage",
+      mainEntity: faqs.map(({ question, answer }) => ({
+        "@type": "Question",
+        name: question,
+        acceptedAnswer: { "@type": "Answer", text: answer },
+      })),
+    },
+  ],
+};
+
 export default function M4aToTextPage() {
-  return <FileToolPage tool={tool} relatedTools={relatedTools} steps={steps} whyPoints={whyPoints} faqs={faqs} />;
+  return (
+    <>
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }} />
+      <FileToolPage tool={tool} relatedTools={relatedTools} steps={steps} whyPoints={whyPoints} faqs={faqs} />
+    </>
+  );
 }

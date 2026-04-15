@@ -58,6 +58,42 @@ const faqs = [
   { question: "How quickly is a WAV file transcribed?", answer: "Most files under 60 minutes are transcribed in under a minute. Larger files may take a little longer." },
 ];
 
+const jsonLd = {
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "SoftwareApplication",
+      name: "WAV to Text Converter",
+      url: `${siteUrl}/wav-to-text`,
+      applicationCategory: "UtilitiesApplication",
+      operatingSystem: "Any",
+      offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
+      description: "Free WAV to text converter. High-accuracy AI transcription for interviews, meetings, and lectures in 50+ languages.",
+      featureList: ["WAV audio transcription", "High accuracy from lossless audio", "50+ languages", "Speaker detection", "SRT export", "Free, no registration"],
+    },
+    {
+      "@type": "BreadcrumbList",
+      itemListElement: [
+        { "@type": "ListItem", position: 1, name: "Home", item: siteUrl },
+        { "@type": "ListItem", position: 2, name: "WAV to Text Converter", item: `${siteUrl}/wav-to-text` },
+      ],
+    },
+    {
+      "@type": "FAQPage",
+      mainEntity: faqs.map(({ question, answer }) => ({
+        "@type": "Question",
+        name: question,
+        acceptedAnswer: { "@type": "Answer", text: answer },
+      })),
+    },
+  ],
+};
+
 export default function WavToTextPage() {
-  return <FileToolPage tool={tool} relatedTools={relatedTools} steps={steps} whyPoints={whyPoints} faqs={faqs} />;
+  return (
+    <>
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }} />
+      <FileToolPage tool={tool} relatedTools={relatedTools} steps={steps} whyPoints={whyPoints} faqs={faqs} />
+    </>
+  );
 }

@@ -58,6 +58,42 @@ const faqs = [
   { question: "Can I get SRT subtitles from an MP3?", answer: "Yes. After transcribing, download the SRT file with automatic timestamps — useful for creating video captions." },
 ];
 
+const jsonLd = {
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "SoftwareApplication",
+      name: "MP3 to Text Converter",
+      url: `${siteUrl}/mp3-to-text`,
+      applicationCategory: "UtilitiesApplication",
+      operatingSystem: "Any",
+      offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
+      description: "Free AI-powered MP3 to text converter with 99.8% accuracy. Transcribe podcasts, interviews, and voice memos in 50+ languages.",
+      featureList: ["MP3 transcription", "99.8% AI accuracy", "50+ languages", "Speaker detection", "SRT export", "Free, no registration"],
+    },
+    {
+      "@type": "BreadcrumbList",
+      itemListElement: [
+        { "@type": "ListItem", position: 1, name: "Home", item: siteUrl },
+        { "@type": "ListItem", position: 2, name: "MP3 to Text Converter", item: `${siteUrl}/mp3-to-text` },
+      ],
+    },
+    {
+      "@type": "FAQPage",
+      mainEntity: faqs.map(({ question, answer }) => ({
+        "@type": "Question",
+        name: question,
+        acceptedAnswer: { "@type": "Answer", text: answer },
+      })),
+    },
+  ],
+};
+
 export default function Mp3ToTextPage() {
-  return <FileToolPage tool={tool} relatedTools={relatedTools} steps={steps} whyPoints={whyPoints} faqs={faqs} />;
+  return (
+    <>
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }} />
+      <FileToolPage tool={tool} relatedTools={relatedTools} steps={steps} whyPoints={whyPoints} faqs={faqs} />
+    </>
+  );
 }

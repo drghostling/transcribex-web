@@ -58,6 +58,42 @@ const faqs = [
   { question: "Does it work with screen recordings?", answer: "Yes. As long as the video has clear audio, TranscribeX will accurately transcribe it — tutorials, presentations, Zoom recordings, all work great." },
 ];
 
+const jsonLd = {
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "SoftwareApplication",
+      name: "MP4 to Text Converter",
+      url: `${siteUrl}/mp4-to-text`,
+      applicationCategory: "UtilitiesApplication",
+      operatingSystem: "Any",
+      offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
+      description: "Free MP4 to text converter. Transcribe MP4 video files with AI — speaker detection, 50+ languages, SRT subtitle export.",
+      featureList: ["MP4 video transcription", "Speaker detection", "50+ languages", "SRT subtitle export", "Free, no registration"],
+    },
+    {
+      "@type": "BreadcrumbList",
+      itemListElement: [
+        { "@type": "ListItem", position: 1, name: "Home", item: siteUrl },
+        { "@type": "ListItem", position: 2, name: "MP4 to Text Converter", item: `${siteUrl}/mp4-to-text` },
+      ],
+    },
+    {
+      "@type": "FAQPage",
+      mainEntity: faqs.map(({ question, answer }) => ({
+        "@type": "Question",
+        name: question,
+        acceptedAnswer: { "@type": "Answer", text: answer },
+      })),
+    },
+  ],
+};
+
 export default function Mp4ToTextPage() {
-  return <FileToolPage tool={tool} relatedTools={relatedTools} steps={steps} whyPoints={whyPoints} faqs={faqs} />;
+  return (
+    <>
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }} />
+      <FileToolPage tool={tool} relatedTools={relatedTools} steps={steps} whyPoints={whyPoints} faqs={faqs} />
+    </>
+  );
 }

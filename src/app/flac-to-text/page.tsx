@@ -58,6 +58,42 @@ const faqs = [
   { question: "Is the FLAC file deleted after transcription?", answer: "Yes. Your file is processed securely and deleted immediately after transcription. We never store your audio or transcript data." },
 ];
 
+const jsonLd = {
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "SoftwareApplication",
+      name: "FLAC to Text Converter",
+      url: `${siteUrl}/flac-to-text`,
+      applicationCategory: "UtilitiesApplication",
+      operatingSystem: "Any",
+      offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
+      description: "Free FLAC to text converter. Lossless audio transcription with 99.8% AI accuracy for studio recordings, archives, and podcasts.",
+      featureList: ["FLAC lossless transcription", "99.8% AI accuracy", "50+ languages", "Speaker detection", "SRT export", "Free, no registration"],
+    },
+    {
+      "@type": "BreadcrumbList",
+      itemListElement: [
+        { "@type": "ListItem", position: 1, name: "Home", item: siteUrl },
+        { "@type": "ListItem", position: 2, name: "FLAC to Text Converter", item: `${siteUrl}/flac-to-text` },
+      ],
+    },
+    {
+      "@type": "FAQPage",
+      mainEntity: faqs.map(({ question, answer }) => ({
+        "@type": "Question",
+        name: question,
+        acceptedAnswer: { "@type": "Answer", text: answer },
+      })),
+    },
+  ],
+};
+
 export default function FlacToTextPage() {
-  return <FileToolPage tool={tool} relatedTools={relatedTools} steps={steps} whyPoints={whyPoints} faqs={faqs} />;
+  return (
+    <>
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }} />
+      <FileToolPage tool={tool} relatedTools={relatedTools} steps={steps} whyPoints={whyPoints} faqs={faqs} />
+    </>
+  );
 }

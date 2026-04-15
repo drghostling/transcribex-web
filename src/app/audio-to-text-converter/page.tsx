@@ -59,6 +59,42 @@ const faqs = [
   { question: "Can I export the transcript as subtitles?", answer: "Yes. After transcription you can download the result as a TXT file or as an SRT subtitle file with automatic timestamps." },
 ];
 
+const jsonLd = {
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "SoftwareApplication",
+      name: "Audio to Text Converter",
+      url: `${siteUrl}/audio-to-text-converter`,
+      applicationCategory: "UtilitiesApplication",
+      operatingSystem: "Any",
+      offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
+      description: "Free AI-powered audio transcription tool supporting MP3, WAV, M4A, FLAC, OGG, AAC, and OPUS formats with 99.8% accuracy.",
+      featureList: ["MP3, WAV, M4A, FLAC, OGG, AAC, OPUS support", "99.8% AI accuracy", "50+ languages", "Multi-speaker detection", "SRT export", "Free, no registration"],
+    },
+    {
+      "@type": "BreadcrumbList",
+      itemListElement: [
+        { "@type": "ListItem", position: 1, name: "Home", item: siteUrl },
+        { "@type": "ListItem", position: 2, name: "Audio to Text Converter", item: `${siteUrl}/audio-to-text-converter` },
+      ],
+    },
+    {
+      "@type": "FAQPage",
+      mainEntity: faqs.map(({ question, answer }) => ({
+        "@type": "Question",
+        name: question,
+        acceptedAnswer: { "@type": "Answer", text: answer },
+      })),
+    },
+  ],
+};
+
 export default function AudioToTextPage() {
-  return <FileToolPage tool={tool} relatedTools={relatedTools} steps={steps} whyPoints={whyPoints} faqs={faqs} />;
+  return (
+    <>
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }} />
+      <FileToolPage tool={tool} relatedTools={relatedTools} steps={steps} whyPoints={whyPoints} faqs={faqs} />
+    </>
+  );
 }
