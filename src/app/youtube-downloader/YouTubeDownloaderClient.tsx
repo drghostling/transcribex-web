@@ -45,7 +45,8 @@ export default function YouTubeDownloaderClient() {
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
 
   const isValidYouTube = (v: string) =>
-    /^https?:\/\/(www\.)?(youtube\.com\/watch\?v=|youtu\.be\/)/.test(v);
+   const isValidYouTube = (v: string) =>
+  /^https?:\/\/(www\.)?(youtube\.com\/(watch\?v=|shorts\/)|youtu\.be\/)/.test(v);
 
   const handleDownload = async () => {
     if (!isValidYouTube(url)) {
