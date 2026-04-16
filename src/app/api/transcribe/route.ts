@@ -39,137 +39,91 @@ interface TranscriptItem {
   duration: number;
 }
 
-type CaptionTrack = {
-  languageCode: string;
-  baseUrl: string;
-  kind?: string;
-  name?: { simpleText?: string };
+type TimedTextTrack = {
+  langCode: string;
+  name: string;
+  kind: string; // "asr" = auto-generated
 };
 
-// ── Step 1: Fetch the YouTube watch page ─────────────────────────────────────
-// We use the SOCS cookie to bypass GDPR consent and gl/hl params to ensure
-// an English, US response with full player data.
-async function fetchWatchPage(videoId: string): Promise<string> {
-  const res = await fetch(
-    `https://www.youtube.com/watch?v=${videoId}&hl=en&gl=US`,
-    {
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        // SOCS bypasses the GDPR consent redirect on YouTube
-        "Cookie": "SOCS=CAISHAgCEhIaAB; CONSENT=YES+cb",
-      },
-    }
-  );
+const YT_HEADERS = {
+  "User-Agent":
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+  "Accept-Language": "en-US,en;q=0.9",
+};
 
-  if (!res.ok) throw new Error(`watch_page_${res.status}`);
+// ── Step 1: Get available caption tracks via timedtext list API ──────────────
+// This endpoint powers YouTube's embedded player on third-party sites and is
+// therefore accessible from server/datacenter IPs, unlike ytInitialPlayerResponse.
+async function getTimedTextTracks(videoId: string): Promise<TimedTextTrack[]> {
+  const url = `https://www.youtube.com/api/timedtext?v=${encodeURIComponent(videoId)}&type=list`;
+  const res = await fetch(url, { headers: YT_HEADERS });
 
-  const html = await res.text();
+  if (!res.ok) throw new Error(`timedtext_list_${res.status}`);
 
-  // Real consent/sign-in redirects are tiny; the actual watch page is always >> 50 KB
-  if (html.length < 50_000) {
-    throw new Error(`watch_page_too_short(len=${html.length})`);
+  const xml = await res.text();
+  if (!xml || xml.length < 10) throw new Error("timedtext_list_empty");
+
+  // Parse <track ... lang_code="en" name="" kind="asr" ... />
+  const tracks: TimedTextTrack[] = [];
+  const tagRe = /<track[^>]+>/g;
+  let m: RegExpExecArray | null;
+  while ((m = tagRe.exec(xml)) !== null) {
+    const tag = m[0];
+    const langCode = tag.match(/lang_code="([^"]+)"/)?.[1] ?? "";
+    const name = tag.match(/\bname="([^"]*)"/)?.[1] ?? "";
+    const kind = tag.match(/\bkind="([^"]*)"/)?.[1] ?? "";
+    if (langCode) tracks.push({ langCode, name, kind });
   }
-
-  return html;
-}
-
-// ── Step 2: Extract ytInitialPlayerResponse from HTML ───────────────────────
-// YouTube embeds the full player data as a JS variable. We extract it with
-// bracket counting so we get the complete JSON regardless of size.
-function extractPlayerResponse(html: string): Record<string, unknown> {
-  const marker = "ytInitialPlayerResponse =";
-  const markerIdx = html.indexOf(marker);
-  if (markerIdx === -1) throw new Error("no_ytInitialPlayerResponse_marker");
-
-  const jsonStart = html.indexOf("{", markerIdx + marker.length);
-  if (jsonStart === -1) throw new Error("no_json_start");
-
-  // Walk forward counting braces to find the matching close
-  let depth = 0;
-  let i = jsonStart;
-  for (; i < Math.min(html.length, jsonStart + 3_000_000); i++) {
-    if (html[i] === "{") depth++;
-    else if (html[i] === "}") {
-      depth--;
-      if (depth === 0) break;
-    }
-  }
-
-  if (depth !== 0) throw new Error("json_brace_mismatch");
-
-  const jsonStr = html.substring(jsonStart, i + 1);
-
-  let playerResponse: Record<string, unknown>;
-  try {
-    playerResponse = JSON.parse(jsonStr) as Record<string, unknown>;
-  } catch {
-    throw new Error("json_parse_failed");
-  }
-
-  return playerResponse;
-}
-
-// ── Step 3: Pull captionTracks from player response ──────────────────────────
-function getCaptionTracks(playerResponse: Record<string, unknown>): CaptionTrack[] {
-  type Captions = {
-    playerCaptionsTracklistRenderer?: {
-      captionTracks?: CaptionTrack[];
-    };
-  };
-
-  const captions = playerResponse.captions as Captions | undefined;
-  const tracks = captions?.playerCaptionsTracklistRenderer?.captionTracks ?? [];
 
   if (tracks.length === 0) {
-    // Debug: surface what the captions key looks like
-    const preview = JSON.stringify(playerResponse.captions)?.slice(0, 200) ?? "undefined";
-    throw new Error(`no_caption_tracks(captions=${preview})`);
+    throw new Error(`timedtext_no_tracks(xml=${xml.slice(0, 300)})`);
   }
 
   return tracks;
 }
 
-// ── Step 4: Pick the best language track ─────────────────────────────────────
-function pickTrack(tracks: CaptionTrack[], langCode: string): CaptionTrack {
+// ── Step 2: Pick the best matching track ────────────────────────────────────
+function pickTimedTextTrack(tracks: TimedTextTrack[], langCode: string): TimedTextTrack {
   const base = langCode.split("-")[0];
-  // Prefer manually uploaded captions over auto-generated (kind: "asr")
+  // Prefer manually uploaded captions over auto-generated
   const manual = tracks.filter((t) => t.kind !== "asr");
   const pool = manual.length > 0 ? manual : tracks;
 
   return (
-    pool.find((t) => t.languageCode === langCode) ??
-    pool.find((t) => t.languageCode.startsWith(base)) ??
-    tracks.find((t) => t.languageCode.startsWith("en")) ??
+    pool.find((t) => t.langCode === langCode) ??
+    pool.find((t) => t.langCode.startsWith(base)) ??
+    tracks.find((t) => t.langCode.startsWith("en")) ??
     tracks[0]
   );
 }
 
-// ── Step 5: Fetch and parse the caption JSON ─────────────────────────────────
-async function fetchCaptionItems(track: CaptionTrack): Promise<TranscriptItem[]> {
-  if (!track?.baseUrl) throw new Error("no_baseUrl");
+// ── Step 3: Fetch transcript JSON for the chosen track ──────────────────────
+async function fetchTimedTextItems(videoId: string, track: TimedTextTrack): Promise<TranscriptItem[]> {
+  const params = new URLSearchParams({ v: videoId, lang: track.langCode, fmt: "json3" });
+  if (track.name) params.set("name", track.name);
 
-  const sep = track.baseUrl.includes("?") ? "&" : "?";
-  const url = `${track.baseUrl}${sep}fmt=json3`;
+  const url = `https://www.youtube.com/api/timedtext?${params.toString()}`;
+  const res = await fetch(url, { headers: YT_HEADERS });
 
-  const res = await fetch(url, {
-    headers: { "User-Agent": "Mozilla/5.0" },
-  });
-  if (!res.ok) throw new Error(`caption_fetch_${res.status}`);
+  if (!res.ok) throw new Error(`timedtext_fetch_${res.status}`);
 
   const text = await res.text();
-  if (!text || text.length < 10) throw new Error("caption_response_empty");
+  if (!text || text.length < 10) throw new Error("timedtext_response_empty");
 
   type CaptionEvent = {
     tStartMs: number;
     dDurationMs?: number;
     segs?: Array<{ utf8?: string }>;
   };
-  const data = JSON.parse(text) as { events?: CaptionEvent[] };
-  const items: TranscriptItem[] = [];
 
+  let data: { events?: CaptionEvent[] };
+  try {
+    data = JSON.parse(text) as { events?: CaptionEvent[] };
+  } catch {
+    throw new Error("timedtext_json_parse_failed");
+  }
+
+  const items: TranscriptItem[] = [];
   for (const ev of data.events ?? []) {
     if (!ev.segs) continue;
     const txt = ev.segs
@@ -182,17 +136,15 @@ async function fetchCaptionItems(track: CaptionTrack): Promise<TranscriptItem[]>
     }
   }
 
-  if (items.length === 0) throw new Error("caption_events_empty");
+  if (items.length === 0) throw new Error("timedtext_events_empty");
   return items;
 }
 
 // ── Main transcript fetcher ──────────────────────────────────────────────────
 async function fetchYouTubeTranscript(videoId: string, langCode: string): Promise<TranscriptItem[]> {
-  const html = await fetchWatchPage(videoId);
-  const playerResponse = extractPlayerResponse(html);
-  const tracks = getCaptionTracks(playerResponse);
-  const track = pickTrack(tracks, langCode);
-  return fetchCaptionItems(track);
+  const tracks = await getTimedTextTracks(videoId);
+  const track = pickTimedTextTrack(tracks, langCode);
+  return fetchTimedTextItems(videoId, track);
 }
 
 // ── SRT helpers ──────────────────────────────────────────────────────────────
@@ -269,7 +221,6 @@ export async function POST(req: NextRequest) {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error("[transcribe] YouTube failed:", msg);
-      // Expose error for debugging until stable
       return NextResponse.json({ error: msg }, { status: 422 });
     }
   }
