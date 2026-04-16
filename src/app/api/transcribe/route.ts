@@ -16,7 +16,6 @@ function checkRateLimit(ip: string): boolean {
   return true;
 }
 
-// ── Helpers ─────────────────────────────────────────────────────────────────
 function extractVideoId(url: string): string | null {
   const m = url.match(
     /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([^&\n?#]+)/
@@ -34,48 +33,33 @@ const languageCodeMap: Record<string, string> = {
 
 interface TranscriptItem {
   text: string;
-  offset: number; // ms
-  duration: number; // ms
+  offset: number;
+  duration: number;
 }
 
-/**
- * Encode a protobuf "field N, wire type 2 (length-delimited)" string field.
- */
-function protoString(fieldNumber: number, value: string): Buffer {
-  const tag = (fieldNumber << 3) | 2; // wire type 2
-  const data = Buffer.from(value, "utf8");
-  // Varint encode length (simple: works for lengths < 128)
-  const len = data.length < 128 ? Buffer.from([data.length]) : null;
-  if (!len) throw new Error("value too long for simple varint");
-  return Buffer.concat([Buffer.from([tag]), len, data]);
-}
+// ── Method 1: YouTube InnerTube API ─────────────────────────────────────────
+// Public API key visible in YouTube's own page source
+const YT_API_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8";
 
-/**
- * Fetch transcript via YouTube InnerTube API (same endpoint used by
- * YouTube mobile / TV apps). Works from server IPs where the HTML-scrape
- * approach is blocked.
- */
-async function fetchYouTubeTranscript(
-  videoId: string,
-  langCode: string
-): Promise<TranscriptItem[]> {
-  // Build protobuf params: field 1 = videoId, field 2 = langCode
-  const paramsBuf = Buffer.concat([
-    protoString(1, videoId),
-    protoString(2, langCode),
-  ]);
-  const params = paramsBuf.toString("base64");
+async function fetchViaInnerTube(videoId: string, langCode: string): Promise<TranscriptItem[]> {
+  // Protobuf encode: field 1 (string) = videoId
+  const idBytes = Buffer.from(videoId, "utf8");
+  const params = Buffer.concat([
+    Buffer.from([0x0a, idBytes.length]),
+    idBytes,
+  ]).toString("base64");
 
   const res = await fetch(
-    "https://www.youtube.com/youtubei/v1/get_transcript?prettyPrint=false",
+    `https://www.youtube.com/youtubei/v1/get_transcript?key=${YT_API_KEY}&prettyPrint=false`,
     {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         "X-YouTube-Client-Name": "1",
         "X-YouTube-Client-Version": "2.20240101.00.00",
+        "Origin": "https://www.youtube.com",
+        "Referer": `https://www.youtube.com/watch?v=${videoId}`,
       },
       body: JSON.stringify({
         context: {
@@ -84,6 +68,7 @@ async function fetchYouTubeTranscript(
             clientVersion: "2.20240101.00.00",
             hl: langCode.split("-")[0],
             gl: "US",
+            userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36,gzip(gfe)",
           },
         },
         params,
@@ -91,52 +76,107 @@ async function fetchYouTubeTranscript(
     }
   );
 
-  if (!res.ok) throw new Error(`yt_api_${res.status}`);
+  const body = await res.json();
 
-  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(`innertube_${res.status}: ${JSON.stringify(body).slice(0, 200)}`);
+  }
 
-  // Navigate the InnerTube response tree
   const segments: unknown[] =
-    data?.actions?.[0]?.updateEngagementPanelAction?.content
+    body?.actions?.[0]?.updateEngagementPanelAction?.content
       ?.transcriptRenderer?.content?.transcriptSearchPanelRenderer?.body
       ?.transcriptSegmentListRenderer?.initialSegments ?? [];
 
   if (!Array.isArray(segments) || segments.length === 0) {
-    // Try without language — fall back to whatever the default track is
-    if (langCode !== "en") return fetchYouTubeTranscript(videoId, "en");
-    throw new Error("no_captions");
+    throw new Error("innertube_empty");
   }
 
   const items: TranscriptItem[] = [];
   for (const seg of segments) {
-    const r = (seg as Record<string, unknown>)
-      .transcriptSegmentRenderer as Record<string, unknown> | undefined;
+    const r = (seg as Record<string, unknown>).transcriptSegmentRenderer as Record<string, unknown> | undefined;
     if (!r) continue;
-
-    const runs = (
-      (r.snippet as Record<string, unknown>)?.runs as Array<{
-        text: string;
-      }> | undefined
-    ) ?? [];
+    const runs = ((r.snippet as Record<string, unknown>)?.runs as Array<{ text: string }> | undefined) ?? [];
     const text = runs.map((x) => x.text).join("").trim();
     const startMs = parseInt(String(r.startMs ?? "0"), 10);
     const endMs = parseInt(String(r.endMs ?? "0"), 10);
-
     if (text) items.push({ text, offset: startMs, duration: endMs - startMs });
   }
 
-  if (items.length === 0) throw new Error("no_captions");
+  if (items.length === 0) throw new Error("innertube_no_items");
   return items;
 }
 
+// ── Method 2: YouTube timedtext API ─────────────────────────────────────────
+async function fetchViaTimedtext(videoId: string, langCode: string): Promise<TranscriptItem[]> {
+  const base = langCode.split("-")[0];
+  const url = `https://www.youtube.com/api/timedtext?v=${videoId}&lang=${base}&fmt=json3&xorb=2&xobt=3&xovt=3`;
+
+  const res = await fetch(url, {
+    headers: {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+      "Referer": "https://www.youtube.com/",
+    },
+  });
+
+  if (!res.ok) throw new Error(`timedtext_${res.status}`);
+
+  const text = await res.text();
+  if (!text || text.trim().length < 5) throw new Error("timedtext_empty");
+
+  let data: { events?: Array<{ tStartMs: number; dDurationMs?: number; segs?: Array<{ utf8?: string }> }> };
+  try {
+    data = JSON.parse(text);
+  } catch {
+    throw new Error("timedtext_parse");
+  }
+
+  const events = data.events ?? [];
+  const items: TranscriptItem[] = [];
+  for (const ev of events) {
+    if (!ev.segs) continue;
+    const txt = ev.segs.map((s) => s.utf8 ?? "").join("").replace(/\n/g, " ").trim();
+    if (txt) items.push({ text: txt, offset: ev.tStartMs, duration: ev.dDurationMs ?? 0 });
+  }
+
+  if (items.length === 0) throw new Error("timedtext_no_items");
+  return items;
+}
+
+// ── Main: try both methods ──────────────────────────────────────────────────
+async function fetchYouTubeTranscript(videoId: string, langCode: string): Promise<TranscriptItem[]> {
+  const errors: string[] = [];
+
+  try {
+    return await fetchViaInnerTube(videoId, langCode);
+  } catch (e) {
+    errors.push(`InnerTube: ${e instanceof Error ? e.message : e}`);
+  }
+
+  try {
+    return await fetchViaTimedtext(videoId, langCode);
+  } catch (e) {
+    errors.push(`Timedtext: ${e instanceof Error ? e.message : e}`);
+  }
+
+  // Fallback: try English if a different language was requested
+  if (langCode !== "en") {
+    try {
+      return await fetchViaTimedtext(videoId, "en");
+    } catch (e) {
+      errors.push(`Timedtext-en: ${e instanceof Error ? e.message : e}`);
+    }
+  }
+
+  throw new Error(`no_transcript | ${errors.join(" | ")}`);
+}
+
+// ── SRT formatter ───────────────────────────────────────────────────────────
 function formatSrt(items: TranscriptItem[]): string {
-  return items
-    .map((item, i) => {
-      const s = msToSrt(item.offset);
-      const e = msToSrt(item.offset + item.duration);
-      return `${i + 1}\n${s} --> ${e}\n${item.text}\n`;
-    })
-    .join("\n");
+  return items.map((item, i) => {
+    const s = msToSrt(item.offset);
+    const e = msToSrt(item.offset + item.duration);
+    return `${i + 1}\n${s} --> ${e}\n${item.text}\n`;
+  }).join("\n");
 }
 
 function msToSrt(ms: number): string {
@@ -152,10 +192,7 @@ function pad(n: number, len = 2): string {
 export async function POST(req: NextRequest) {
   const ip = req.headers.get("x-forwarded-for") ?? "unknown";
   if (!checkRateLimit(ip)) {
-    return NextResponse.json(
-      { error: "Too many requests. Please wait a minute." },
-      { status: 429 }
-    );
+    return NextResponse.json({ error: "Too many requests. Please wait a minute." }, { status: 429 });
   }
 
   let body: {
@@ -177,28 +214,19 @@ export async function POST(req: NextRequest) {
 
   // ── YouTube ──────────────────────────────────────────────────────────────
   if (type === "youtube") {
-    if (!url)
-      return NextResponse.json(
-        { error: "YouTube URL is required" },
-        { status: 400 }
-      );
+    if (!url) return NextResponse.json({ error: "YouTube URL is required" }, { status: 400 });
 
     const videoId = extractVideoId(url);
-    if (!videoId)
-      return NextResponse.json(
-        { error: "Invalid YouTube URL" },
-        { status: 400 }
-      );
+    if (!videoId) return NextResponse.json({ error: "Invalid YouTube URL" }, { status: 400 });
 
     const langCode = languageCodeMap[language] ?? "en";
 
     try {
       const items = await fetchYouTubeTranscript(videoId, langCode);
 
-      const transcript =
-        format === "srt"
-          ? formatSrt(items)
-          : items.map((i) => i.text).join(" ").replace(/\s+/g, " ").trim();
+      const transcript = format === "srt"
+        ? formatSrt(items)
+        : items.map((i) => i.text).join(" ").replace(/\s+/g, " ").trim();
 
       return NextResponse.json({
         transcript,
@@ -206,23 +234,19 @@ export async function POST(req: NextRequest) {
         charCount: transcript.length,
       });
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "";
-      console.error("YouTube transcript error:", msg);
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error("[transcribe] YouTube failed:", msg);
 
-      if (msg === "no_captions") {
+      if (msg.includes("no_transcript")) {
+        // Return the detailed error in dev, generic in prod
+        const detail = process.env.NODE_ENV === "development" ? ` (${msg})` : "";
         return NextResponse.json(
-          {
-            error:
-              "This video doesn't have captions available. Try a video with subtitles or auto-generated captions enabled.",
-          },
+          { error: `Could not retrieve transcript.${detail} The video may not have captions, or may be private/age-restricted.` },
           { status: 422 }
         );
       }
       return NextResponse.json(
-        {
-          error:
-            "Could not fetch transcript. The video may be private, age-restricted, or unavailable.",
-        },
+        { error: "Could not fetch transcript. The video may be private, age-restricted, or unavailable." },
         { status: 422 }
       );
     }
@@ -230,23 +254,13 @@ export async function POST(req: NextRequest) {
 
   // ── File (Claude AI) ─────────────────────────────────────────────────────
   if (type === "file") {
-    if (!filename)
-      return NextResponse.json(
-        { error: "Filename is required" },
-        { status: 400 }
-      );
+    if (!filename) return NextResponse.json({ error: "Filename is required" }, { status: 400 });
 
     const apiKey = process.env.ANTHROPIC_API_KEY;
-    if (!apiKey)
-      return NextResponse.json(
-        { error: "API key not configured" },
-        { status: 500 }
-      );
+    if (!apiKey) return NextResponse.json({ error: "API key not configured" }, { status: 500 });
 
     const client = new Anthropic({ apiKey });
-    const speakerNote = multiSpeaker
-      ? " Use [Speaker 1], [Speaker 2] labels for different speakers."
-      : "";
+    const speakerNote = multiSpeaker ? " Use [Speaker 1], [Speaker 2] labels for different speakers." : "";
 
     const prompt = `You are a professional transcription service. Generate a realistic, detailed transcription demo for an audio/video file named "${filename}".
 
@@ -265,8 +279,7 @@ Output ONLY the transcript text, no explanations or meta-commentary.`;
         messages: [{ role: "user", content: prompt }],
       });
 
-      const transcript =
-        message.content[0].type === "text" ? message.content[0].text : "";
+      const transcript = message.content[0].type === "text" ? message.content[0].text : "";
 
       return NextResponse.json({
         transcript,
@@ -275,10 +288,7 @@ Output ONLY the transcript text, no explanations or meta-commentary.`;
       });
     } catch (error) {
       console.error("Anthropic API error:", error);
-      return NextResponse.json(
-        { error: "Transcription failed. Please try again." },
-        { status: 500 }
-      );
+      return NextResponse.json({ error: "Transcription failed. Please try again." }, { status: 500 });
     }
   }
 
