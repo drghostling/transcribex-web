@@ -49,7 +49,6 @@ async function fetchYouTubeTranscript(
     videoId,
     lang: langCode,
     text: "false",
-    mode: "native",
   });
 
   const res = await fetch(
@@ -60,7 +59,10 @@ async function fetchYouTubeTranscript(
   if (res.status === 401) throw new Error("supadata_invalid_api_key");
   if (res.status === 404) throw new Error("supadata_video_not_found_or_no_captions");
   if (res.status === 429) throw new Error("supadata_rate_limit_exceeded");
-  if (!res.ok) throw new Error(`supadata_${res.status}`);
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`supadata_${res.status}(${body.slice(0, 300)})`);
+  }
 
   type SupadataSegment = { text: string; offset: number; duration: number; lang?: string };
   const data = await res.json() as {
