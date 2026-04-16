@@ -28,7 +28,7 @@ export default function YouTubeToMp4Client() {
   const [url, setUrl] = useState("");
   const [quality, setQuality] = useState("1080p HD");
   const [loading, setLoading] = useState(false);
-  const [done, setDone] = useState(false);
+  const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
 
   const isValidYouTube = (v: string) =>
@@ -40,13 +40,24 @@ export default function YouTubeToMp4Client() {
       return;
     }
     setLoading(true);
-    setDone(false);
+    setDownloadUrl(null);
 
-    await new Promise((r) => setTimeout(r, 2000));
-
-    setLoading(false);
-    setDone(true);
-    setToast({ message: `Video ready to download in ${quality}!`, type: "success" });
+    try {
+      const res = await fetch("/api/download", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url, format: "mp4", quality }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Download failed");
+      setDownloadUrl(data.downloadUrl);
+      window.open(data.downloadUrl, "_blank");
+      setToast({ message: "Download started!", type: "success" });
+    } catch (err) {
+      setToast({ message: err instanceof Error ? err.message : "Download failed", type: "error" });
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -88,7 +99,7 @@ export default function YouTubeToMp4Client() {
                 <input
                   type="url"
                   value={url}
-                  onChange={(e) => { setUrl(e.target.value); setDone(false); }}
+                  onChange={(e) => { setUrl(e.target.value); setDownloadUrl(null); }}
                   onKeyDown={(e) => e.key === "Enter" && handleDownload()}
                   placeholder="https://www.youtube.com/watch?v=..."
                   disabled={loading}
@@ -136,14 +147,24 @@ export default function YouTubeToMp4Client() {
               </button>
             </div>
 
-            {done && (
+            {downloadUrl && (
               <div className="px-6 pb-6">
-                <div className="bg-green-50 border border-green-200 rounded-xl p-4 flex items-center gap-3">
-                  <CheckCircle size={20} weight="fill" className="text-green-500 shrink-0" />
-                  <div>
-                    <p className="text-sm font-semibold text-green-800">Video ready!</p>
-                    <p className="text-xs text-green-600">Quality: {quality} &bull; Format: MP4</p>
+                <div className="bg-green-50 border border-green-200 rounded-xl p-4 flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <CheckCircle size={20} weight="fill" className="text-green-500 shrink-0" />
+                    <div>
+                      <p className="text-sm font-semibold text-green-800">Download started!</p>
+                      <p className="text-xs text-green-600">Quality: {quality} &bull; Format: MP4</p>
+                    </div>
                   </div>
+                  <a
+                    href={downloadUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="shrink-0 text-xs font-semibold text-primary-600 underline"
+                  >
+                    Click here if it didn&apos;t start
+                  </a>
                 </div>
               </div>
             )}
