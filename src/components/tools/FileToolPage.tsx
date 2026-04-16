@@ -64,22 +64,20 @@ export default function FileToolPage({
     setProgress(0);
     setResult(null);
 
-    // Fake progress animation
     const interval = setInterval(() => {
-      setProgress((p) => (p < 85 ? p + Math.random() * 12 : p));
-    }, 400);
+      setProgress((p) => (p < 85 ? p + Math.random() * 6 : p));
+    }, 1000);
 
     try {
-      const res = await fetch("/api/transcribe", {
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("language", language);
+      formData.append("format", "txt");
+      formData.append("multiSpeaker", String(multiSpeaker));
+
+      const res = await fetch("/api/transcribe-file", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          type: "file",
-          filename: file.name,
-          language,
-          format: "txt",
-          multiSpeaker,
-        }),
+        body: formData,
       });
 
       clearInterval(interval);

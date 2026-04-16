@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import Anthropic from "@anthropic-ai/sdk";
 
 export const runtime = "edge";
 
@@ -162,44 +161,6 @@ export async function POST(req: NextRequest) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error("[transcribe] YouTube failed:", msg);
       return NextResponse.json({ error: msg }, { status: 422 });
-    }
-  }
-
-  // ── File (Claude AI) ─────────────────────────────────────────────────────
-  if (type === "file") {
-    if (!filename) {
-      return NextResponse.json({ error: "Filename is required" }, { status: 400 });
-    }
-    const apiKey = process.env.ANTHROPIC_API_KEY;
-    if (!apiKey) {
-      return NextResponse.json({ error: "API key not configured" }, { status: 500 });
-    }
-
-    const client = new Anthropic({ apiKey });
-    const speakerNote = multiSpeaker
-      ? " Use [Speaker 1], [Speaker 2] labels for different speakers."
-      : "";
-    const prompt = `You are a professional transcription service. Generate a realistic, detailed transcription demo for an audio/video file named "${filename}".\n\nLanguage: ${language}\nFormat: ${format}\n${multiSpeaker ? "Mode: Multi-speaker" : "Mode: Single speaker"}\n\nCreate a high-quality, natural-sounding transcription of approximately 200-300 words.${speakerNote}\n\nOutput ONLY the transcript text, no explanations or meta-commentary.`;
-
-    try {
-      const message = await client.messages.create({
-        model: "claude-haiku-4-5-20251001",
-        max_tokens: 1024,
-        messages: [{ role: "user", content: prompt }],
-      });
-      const transcript =
-        message.content[0].type === "text" ? message.content[0].text : "";
-      return NextResponse.json({
-        transcript,
-        wordCount: transcript.split(/\s+/).filter(Boolean).length,
-        charCount: transcript.length,
-      });
-    } catch (error) {
-      console.error("Anthropic API error:", error);
-      return NextResponse.json(
-        { error: "Transcription failed. Please try again." },
-        { status: 500 }
-      );
     }
   }
 
