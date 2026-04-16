@@ -16,7 +16,7 @@ function checkRateLimit(ip: string): boolean {
   return true;
 }
 
-// ── YouTube helpers ─────────────────────────────────────────────────────────
+// ── Helpers ─────────────────────────────────────────────────────────────────
 function extractVideoId(url: string): string | null {
   const m = url.match(
     /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([^&\n?#]+)/
@@ -32,96 +32,97 @@ const languageCodeMap: Record<string, string> = {
   Hindi: "hi", Bengali: "bn",
 };
 
-// Browser-like headers + GDPR consent cookie so YouTube doesn't
-// serve a consent redirect page to cloud IPs.
-const YT_HEADERS: Record<string, string> = {
-  "User-Agent":
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-  "Accept-Language": "en-US,en;q=0.9",
-  Accept:
-    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-  // Bypass YouTube GDPR consent gate
-  Cookie: "SOCS=CAISHAgCEhIaAB; CONSENT=YES+cb",
-};
-
 interface TranscriptItem {
   text: string;
   offset: number; // ms
   duration: number; // ms
 }
 
+/**
+ * Encode a protobuf "field N, wire type 2 (length-delimited)" string field.
+ */
+function protoString(fieldNumber: number, value: string): Buffer {
+  const tag = (fieldNumber << 3) | 2; // wire type 2
+  const data = Buffer.from(value, "utf8");
+  // Varint encode length (simple: works for lengths < 128)
+  const len = data.length < 128 ? Buffer.from([data.length]) : null;
+  if (!len) throw new Error("value too long for simple varint");
+  return Buffer.concat([Buffer.from([tag]), len, data]);
+}
+
+/**
+ * Fetch transcript via YouTube InnerTube API (same endpoint used by
+ * YouTube mobile / TV apps). Works from server IPs where the HTML-scrape
+ * approach is blocked.
+ */
 async function fetchYouTubeTranscript(
   videoId: string,
   langCode: string
 ): Promise<TranscriptItem[]> {
-  // 1. Fetch the video page
-  const pageRes = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
-    headers: YT_HEADERS,
-  });
-  if (!pageRes.ok) throw new Error(`yt_page_${pageRes.status}`);
+  // Build protobuf params: field 1 = videoId, field 2 = langCode
+  const paramsBuf = Buffer.concat([
+    protoString(1, videoId),
+    protoString(2, langCode),
+  ]);
+  const params = paramsBuf.toString("base64");
 
-  const html = await pageRes.text();
+  const res = await fetch(
+    "https://www.youtube.com/youtubei/v1/get_transcript?prettyPrint=false",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "X-YouTube-Client-Name": "1",
+        "X-YouTube-Client-Version": "2.20240101.00.00",
+      },
+      body: JSON.stringify({
+        context: {
+          client: {
+            clientName: "WEB",
+            clientVersion: "2.20240101.00.00",
+            hl: langCode.split("-")[0],
+            gl: "US",
+          },
+        },
+        params,
+      }),
+    }
+  );
 
-  if (html.includes('"class":"g-recaptcha"')) throw new Error("yt_captcha");
+  if (!res.ok) throw new Error(`yt_api_${res.status}`);
 
-  // 2. Extract the captionTracks JSON embedded in the page
-  const parts = html.split('"captions":');
-  if (parts.length < 2) throw new Error("no_captions");
+  const data = await res.json();
 
-  let captionsObj: {
-    playerCaptionsTracklistRenderer?: {
-      captionTracks?: Array<{ languageCode: string; baseUrl: string }>;
-    };
-  };
-  try {
-    captionsObj = JSON.parse(
-      parts[1].split(',"videoDetails"')[0].replace(/\n/g, "")
-    );
-  } catch {
+  // Navigate the InnerTube response tree
+  const segments: unknown[] =
+    data?.actions?.[0]?.updateEngagementPanelAction?.content
+      ?.transcriptRenderer?.content?.transcriptSearchPanelRenderer?.body
+      ?.transcriptSegmentListRenderer?.initialSegments ?? [];
+
+  if (!Array.isArray(segments) || segments.length === 0) {
+    // Try without language — fall back to whatever the default track is
+    if (langCode !== "en") return fetchYouTubeTranscript(videoId, "en");
     throw new Error("no_captions");
   }
 
-  const tracks =
-    captionsObj?.playerCaptionsTracklistRenderer?.captionTracks ?? [];
-  if (tracks.length === 0) throw new Error("no_captions");
-
-  // 3. Pick best language track
-  const base = langCode.split("-")[0];
-  const track =
-    tracks.find((t) => t.languageCode === langCode) ??
-    tracks.find((t) => t.languageCode.startsWith(base)) ??
-    tracks.find((t) => t.languageCode.startsWith("en")) ??
-    tracks[0];
-
-  if (!track?.baseUrl) throw new Error("no_captions");
-
-  // 4. Fetch the caption XML
-  const xmlRes = await fetch(track.baseUrl, { headers: YT_HEADERS });
-  if (!xmlRes.ok) throw new Error(`yt_xml_${xmlRes.status}`);
-  const xml = await xmlRes.text();
-
-  // 5. Parse <text start="…" dur="…">…</text> nodes
-  const re = /<text start="([^"]+)"[^>]*dur="([^"]+)"[^>]*>([\s\S]*?)<\/text>/g;
   const items: TranscriptItem[] = [];
-  let m: RegExpExecArray | null;
+  for (const seg of segments) {
+    const r = (seg as Record<string, unknown>)
+      .transcriptSegmentRenderer as Record<string, unknown> | undefined;
+    if (!r) continue;
 
-  while ((m = re.exec(xml)) !== null) {
-    const text = m[3]
-      .replace(/<[^>]+>/g, "")
-      .replace(/&amp;/g, "&")
-      .replace(/&lt;/g, "<")
-      .replace(/&gt;/g, ">")
-      .replace(/&#39;/g, "'")
-      .replace(/&quot;/g, '"')
-      .replace(/\n/g, " ")
-      .trim();
-    if (text) {
-      items.push({
-        offset: Math.round(parseFloat(m[1]) * 1000),
-        duration: Math.round(parseFloat(m[2]) * 1000),
-        text,
-      });
-    }
+    const runs = (
+      (r.snippet as Record<string, unknown>)?.runs as Array<{
+        text: string;
+      }> | undefined
+    ) ?? [];
+    const text = runs.map((x) => x.text).join("").trim();
+    const startMs = parseInt(String(r.startMs ?? "0"), 10);
+    const endMs = parseInt(String(r.endMs ?? "0"), 10);
+
+    if (text) items.push({ text, offset: startMs, duration: endMs - startMs });
   }
 
   if (items.length === 0) throw new Error("no_captions");
@@ -176,13 +177,18 @@ export async function POST(req: NextRequest) {
 
   // ── YouTube ──────────────────────────────────────────────────────────────
   if (type === "youtube") {
-    if (!url) {
-      return NextResponse.json({ error: "YouTube URL is required" }, { status: 400 });
-    }
+    if (!url)
+      return NextResponse.json(
+        { error: "YouTube URL is required" },
+        { status: 400 }
+      );
+
     const videoId = extractVideoId(url);
-    if (!videoId) {
-      return NextResponse.json({ error: "Invalid YouTube URL" }, { status: 400 });
-    }
+    if (!videoId)
+      return NextResponse.json(
+        { error: "Invalid YouTube URL" },
+        { status: 400 }
+      );
 
     const langCode = languageCodeMap[language] ?? "en";
 
@@ -203,7 +209,7 @@ export async function POST(req: NextRequest) {
       const msg = err instanceof Error ? err.message : "";
       console.error("YouTube transcript error:", msg);
 
-      if (msg === "no_captions" || msg === "no_captions") {
+      if (msg === "no_captions") {
         return NextResponse.json(
           {
             error:
@@ -224,14 +230,18 @@ export async function POST(req: NextRequest) {
 
   // ── File (Claude AI) ─────────────────────────────────────────────────────
   if (type === "file") {
-    if (!filename) {
-      return NextResponse.json({ error: "Filename is required" }, { status: 400 });
-    }
+    if (!filename)
+      return NextResponse.json(
+        { error: "Filename is required" },
+        { status: 400 }
+      );
 
     const apiKey = process.env.ANTHROPIC_API_KEY;
-    if (!apiKey) {
-      return NextResponse.json({ error: "API key not configured" }, { status: 500 });
-    }
+    if (!apiKey)
+      return NextResponse.json(
+        { error: "API key not configured" },
+        { status: 500 }
+      );
 
     const client = new Anthropic({ apiKey });
     const speakerNote = multiSpeaker
@@ -244,7 +254,7 @@ Language: ${language}
 Format: ${format}
 ${multiSpeaker ? "Mode: Multi-speaker (label each speaker)" : "Mode: Single speaker"}
 
-Create a high-quality, natural-sounding transcription of approximately 200-300 words that feels like a real transcript.${speakerNote}
+Create a high-quality, natural-sounding transcription of approximately 200-300 words.${speakerNote}
 
 Output ONLY the transcript text, no explanations or meta-commentary.`;
 
