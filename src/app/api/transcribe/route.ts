@@ -237,16 +237,9 @@ export async function POST(req: NextRequest) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error("[transcribe] YouTube failed:", msg);
 
-      if (msg.includes("no_transcript")) {
-        // Return the detailed error in dev, generic in prod
-        const detail = process.env.NODE_ENV === "development" ? ` (${msg})` : "";
-        return NextResponse.json(
-          { error: `Could not retrieve transcript.${detail} The video may not have captions, or may be private/age-restricted.` },
-          { status: 422 }
-        );
-      }
+      // Temporary debug: show full error chain so we can diagnose
       return NextResponse.json(
-        { error: "Could not fetch transcript. The video may be private, age-restricted, or unavailable." },
+        { error: msg },
         { status: 422 }
       );
     }
