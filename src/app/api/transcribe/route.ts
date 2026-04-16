@@ -37,20 +37,11 @@ interface TranscriptItem {
   duration: number;
 }
 
-// ── Method 1: YouTube InnerTube API ─────────────────────────────────────────
-// Public API key visible in YouTube's own page source
-const YT_API_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8";
-
-async function fetchViaInnerTube(videoId: string, langCode: string): Promise<TranscriptItem[]> {
-  // Protobuf encode: field 1 (string) = videoId
-  const idBytes = Buffer.from(videoId, "utf8");
-  const params = Buffer.concat([
-    Buffer.from([0x0a, idBytes.length]),
-    idBytes,
-  ]).toString("base64");
-
-  const res = await fetch(
-    `https://www.youtube.com/youtubei/v1/get_transcript?key=${YT_API_KEY}&prettyPrint=false`,
+// ── Method 1: YouTube /player endpoint → caption track URL → fetch XML ───────
+async function fetchViaPlayer(videoId: string, langCode: string): Promise<TranscriptItem[]> {
+  // Step 1: Get video player data (includes captionTracks with baseUrls)
+  const playerRes = await fetch(
+    "https://www.youtube.com/youtubei/v1/player?prettyPrint=false",
     {
       method: "POST",
       headers: {
@@ -66,43 +57,60 @@ async function fetchViaInnerTube(videoId: string, langCode: string): Promise<Tra
           client: {
             clientName: "WEB",
             clientVersion: "2.20240101.00.00",
-            hl: langCode.split("-")[0],
+            hl: "en",
             gl: "US",
-            userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36,gzip(gfe)",
           },
         },
-        params,
+        videoId,
       }),
     }
   );
 
-  const body = await res.json();
-
-  if (!res.ok) {
-    throw new Error(`innertube_${res.status}: ${JSON.stringify(body).slice(0, 200)}`);
+  if (!playerRes.ok) {
+    const txt = await playerRes.text();
+    throw new Error(`player_${playerRes.status}: ${txt.slice(0, 150)}`);
   }
 
-  const segments: unknown[] =
-    body?.actions?.[0]?.updateEngagementPanelAction?.content
-      ?.transcriptRenderer?.content?.transcriptSearchPanelRenderer?.body
-      ?.transcriptSegmentListRenderer?.initialSegments ?? [];
+  const playerData = await playerRes.json();
+  const tracks: Array<{ languageCode: string; baseUrl: string; kind?: string }> =
+    playerData?.captions?.playerCaptionsTracklistRenderer?.captionTracks ?? [];
 
-  if (!Array.isArray(segments) || segments.length === 0) {
-    throw new Error("innertube_empty");
-  }
+  if (tracks.length === 0) throw new Error("player_no_tracks");
+
+  // Step 2: Pick best language (prefer manual over auto-generated)
+  const base = langCode.split("-")[0];
+  const manual = tracks.filter((t) => t.kind !== "asr");
+  const auto = tracks.filter((t) => t.kind === "asr");
+  const pool = manual.length > 0 ? manual : auto;
+
+  const track =
+    pool.find((t) => t.languageCode === langCode) ??
+    pool.find((t) => t.languageCode.startsWith(base)) ??
+    tracks.find((t) => t.languageCode.startsWith("en")) ??
+    tracks[0];
+
+  if (!track?.baseUrl) throw new Error("player_no_track_url");
+
+  // Step 3: Fetch caption JSON (append &fmt=json3 to baseUrl)
+  const sep = track.baseUrl.includes("?") ? "&" : "?";
+  const captionRes = await fetch(`${track.baseUrl}${sep}fmt=json3`);
+  if (!captionRes.ok) throw new Error(`caption_${captionRes.status}`);
+
+  const captionText = await captionRes.text();
+  if (!captionText || captionText.trim().length < 5) throw new Error("caption_empty");
+
+  const captionData: {
+    events?: Array<{ tStartMs: number; dDurationMs?: number; segs?: Array<{ utf8?: string }> }>;
+  } = JSON.parse(captionText);
 
   const items: TranscriptItem[] = [];
-  for (const seg of segments) {
-    const r = (seg as Record<string, unknown>).transcriptSegmentRenderer as Record<string, unknown> | undefined;
-    if (!r) continue;
-    const runs = ((r.snippet as Record<string, unknown>)?.runs as Array<{ text: string }> | undefined) ?? [];
-    const text = runs.map((x) => x.text).join("").trim();
-    const startMs = parseInt(String(r.startMs ?? "0"), 10);
-    const endMs = parseInt(String(r.endMs ?? "0"), 10);
-    if (text) items.push({ text, offset: startMs, duration: endMs - startMs });
+  for (const ev of captionData.events ?? []) {
+    if (!ev.segs) continue;
+    const text = ev.segs.map((s) => s.utf8 ?? "").join("").replace(/\n/g, " ").trim();
+    if (text) items.push({ text, offset: ev.tStartMs, duration: ev.dDurationMs ?? 0 });
   }
 
-  if (items.length === 0) throw new Error("innertube_no_items");
+  if (items.length === 0) throw new Error("player_no_items");
   return items;
 }
 
@@ -147,9 +155,9 @@ async function fetchYouTubeTranscript(videoId: string, langCode: string): Promis
   const errors: string[] = [];
 
   try {
-    return await fetchViaInnerTube(videoId, langCode);
+    return await fetchViaPlayer(videoId, langCode);
   } catch (e) {
-    errors.push(`InnerTube: ${e instanceof Error ? e.message : e}`);
+    errors.push(`Player: ${e instanceof Error ? e.message : e}`);
   }
 
   try {
