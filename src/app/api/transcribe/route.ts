@@ -39,112 +39,45 @@ interface TranscriptItem {
   duration: number;
 }
 
-type TimedTextTrack = {
-  langCode: string;
-  name: string;
-  kind: string; // "asr" = auto-generated
-};
+// ── Supadata transcript fetcher ──────────────────────────────────────────────
+async function fetchYouTubeTranscript(
+  videoId: string,
+  langCode: string,
+  apiKey: string
+): Promise<TranscriptItem[]> {
+  const params = new URLSearchParams({
+    videoId,
+    lang: langCode,
+    text: "false",
+    mode: "native",
+  });
 
-const YT_HEADERS = {
-  "User-Agent":
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-  "Accept-Language": "en-US,en;q=0.9",
-};
-
-// ── Step 1: Get available caption tracks via timedtext list API ──────────────
-// This endpoint powers YouTube's embedded player on third-party sites and is
-// therefore accessible from server/datacenter IPs, unlike ytInitialPlayerResponse.
-async function getTimedTextTracks(videoId: string): Promise<TimedTextTrack[]> {
-  const url = `https://www.youtube.com/api/timedtext?v=${encodeURIComponent(videoId)}&type=list`;
-  const res = await fetch(url, { headers: YT_HEADERS });
-
-  if (!res.ok) throw new Error(`timedtext_list_${res.status}`);
-
-  const xml = await res.text();
-  if (!xml || xml.length < 10) throw new Error("timedtext_list_empty");
-
-  // Parse <track ... lang_code="en" name="" kind="asr" ... />
-  const tracks: TimedTextTrack[] = [];
-  const tagRe = /<track[^>]+>/g;
-  let m: RegExpExecArray | null;
-  while ((m = tagRe.exec(xml)) !== null) {
-    const tag = m[0];
-    const langCode = tag.match(/lang_code="([^"]+)"/)?.[1] ?? "";
-    const name = tag.match(/\bname="([^"]*)"/)?.[1] ?? "";
-    const kind = tag.match(/\bkind="([^"]*)"/)?.[1] ?? "";
-    if (langCode) tracks.push({ langCode, name, kind });
-  }
-
-  if (tracks.length === 0) {
-    throw new Error(`timedtext_no_tracks(xml=${xml.slice(0, 300)})`);
-  }
-
-  return tracks;
-}
-
-// ── Step 2: Pick the best matching track ────────────────────────────────────
-function pickTimedTextTrack(tracks: TimedTextTrack[], langCode: string): TimedTextTrack {
-  const base = langCode.split("-")[0];
-  // Prefer manually uploaded captions over auto-generated
-  const manual = tracks.filter((t) => t.kind !== "asr");
-  const pool = manual.length > 0 ? manual : tracks;
-
-  return (
-    pool.find((t) => t.langCode === langCode) ??
-    pool.find((t) => t.langCode.startsWith(base)) ??
-    tracks.find((t) => t.langCode.startsWith("en")) ??
-    tracks[0]
+  const res = await fetch(
+    `https://api.supadata.ai/v1/transcript?${params.toString()}`,
+    { headers: { "x-api-key": apiKey } }
   );
-}
 
-// ── Step 3: Fetch transcript JSON for the chosen track ──────────────────────
-async function fetchTimedTextItems(videoId: string, track: TimedTextTrack): Promise<TranscriptItem[]> {
-  const params = new URLSearchParams({ v: videoId, lang: track.langCode, fmt: "json3" });
-  if (track.name) params.set("name", track.name);
+  if (res.status === 401) throw new Error("supadata_invalid_api_key");
+  if (res.status === 404) throw new Error("supadata_video_not_found_or_no_captions");
+  if (res.status === 429) throw new Error("supadata_rate_limit_exceeded");
+  if (!res.ok) throw new Error(`supadata_${res.status}`);
 
-  const url = `https://www.youtube.com/api/timedtext?${params.toString()}`;
-  const res = await fetch(url, { headers: YT_HEADERS });
-
-  if (!res.ok) throw new Error(`timedtext_fetch_${res.status}`);
-
-  const text = await res.text();
-  if (!text || text.length < 10) throw new Error("timedtext_response_empty");
-
-  type CaptionEvent = {
-    tStartMs: number;
-    dDurationMs?: number;
-    segs?: Array<{ utf8?: string }>;
+  type SupadataSegment = { text: string; offset: number; duration: number; lang?: string };
+  const data = await res.json() as {
+    content: SupadataSegment[];
+    lang?: string;
+    availableLangs?: string[];
   };
 
-  let data: { events?: CaptionEvent[] };
-  try {
-    data = JSON.parse(text) as { events?: CaptionEvent[] };
-  } catch {
-    throw new Error("timedtext_json_parse_failed");
+  if (!Array.isArray(data.content) || data.content.length === 0) {
+    throw new Error("supadata_empty_transcript");
   }
 
-  const items: TranscriptItem[] = [];
-  for (const ev of data.events ?? []) {
-    if (!ev.segs) continue;
-    const txt = ev.segs
-      .map((s) => s.utf8 ?? "")
-      .join("")
-      .replace(/\n/g, " ")
-      .trim();
-    if (txt) {
-      items.push({ text: txt, offset: ev.tStartMs, duration: ev.dDurationMs ?? 0 });
-    }
-  }
-
-  if (items.length === 0) throw new Error("timedtext_events_empty");
-  return items;
-}
-
-// ── Main transcript fetcher ──────────────────────────────────────────────────
-async function fetchYouTubeTranscript(videoId: string, langCode: string): Promise<TranscriptItem[]> {
-  const tracks = await getTimedTextTracks(videoId);
-  const track = pickTimedTextTrack(tracks, langCode);
-  return fetchTimedTextItems(videoId, track);
+  return data.content.map((s) => ({
+    text: s.text,
+    offset: s.offset,
+    duration: s.duration,
+  }));
 }
 
 // ── SRT helpers ──────────────────────────────────────────────────────────────
@@ -204,10 +137,15 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Invalid YouTube URL" }, { status: 400 });
     }
 
+    const apiKey = process.env.SUPADATA_API_KEY;
+    if (!apiKey) {
+      return NextResponse.json({ error: "Transcription service not configured" }, { status: 500 });
+    }
+
     const langCode = languageCodeMap[language] ?? "en";
 
     try {
-      const items = await fetchYouTubeTranscript(videoId, langCode);
+      const items = await fetchYouTubeTranscript(videoId, langCode, apiKey);
       const transcript =
         format === "srt"
           ? formatSrt(items)
