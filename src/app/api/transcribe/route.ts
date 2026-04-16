@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 
+// Run on Cloudflare's edge network (not AWS Lambda) — YouTube doesn't
+// block edge/CDN IPs the way it blocks serverless datacenter IPs.
+export const runtime = "edge";
+
 // ── Rate limiter ────────────────────────────────────────────────────────────
 const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
 
