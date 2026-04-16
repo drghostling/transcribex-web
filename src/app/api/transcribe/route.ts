@@ -1,8 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 
-// Run on Cloudflare's edge network (not AWS Lambda) — YouTube doesn't
-// block edge/CDN IPs the way it blocks serverless datacenter IPs.
 export const runtime = "edge";
 
 // ── Rate limiter ────────────────────────────────────────────────────────────
@@ -37,208 +35,284 @@ const languageCodeMap: Record<string, string> = {
 
 interface TranscriptItem {
   text: string;
-  offset: number; // ms
-  duration: number; // ms
+  offset: number;
+  duration: number;
 }
 
-type CaptionTrack = { languageCode: string; baseUrl: string; kind?: string };
+type CaptionTrack = {
+  languageCode: string;
+  baseUrl: string;
+  kind?: string;
+  name?: { simpleText?: string };
+};
 
-// ── Fetch player data for a given client type ───────────────────────────────
-async function getPlayerData(videoId: string, clientName: string, clientVersion: string) {
+// ── Step 1: Fetch the YouTube watch page ─────────────────────────────────────
+// We use the SOCS cookie to bypass GDPR consent and gl/hl params to ensure
+// an English, US response with full player data.
+async function fetchWatchPage(videoId: string): Promise<string> {
   const res = await fetch(
-    "https://www.youtube.com/youtubei/v1/player?prettyPrint=false",
+    `https://www.youtube.com/watch?v=${videoId}&hl=en&gl=US`,
     {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        context: {
-          client: { clientName, clientVersion, hl: "en", gl: "US" },
-          thirdParty: { embedUrl: "https://www.youtube.com/" },
-        },
-        videoId,
-      }),
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        // SOCS bypasses the GDPR consent redirect on YouTube
+        "Cookie": "SOCS=CAISHAgCEhIaAB; CONSENT=YES+cb",
+      },
     }
   );
-  if (!res.ok) throw new Error(`http_${res.status}`);
-  return res.json() as Promise<Record<string, unknown>>;
+
+  if (!res.ok) throw new Error(`watch_page_${res.status}`);
+
+  const html = await res.text();
+
+  // Detect consent / sign-in redirect pages
+  if (
+    html.includes("consent.youtube.com") ||
+    html.includes("action=\"https://consent.youtube.com") ||
+    html.length < 50_000
+  ) {
+    throw new Error(`watch_page_blocked(len=${html.length})`);
+  }
+
+  return html;
 }
 
-// ── Method 1: /player endpoint (tries 3 client types) ───────────────────────
-async function fetchViaPlayer(videoId: string, langCode: string): Promise<TranscriptItem[]> {
-  const clients: [string, string][] = [
-    ["TVHTML5_SIMPLY_EMBEDDED_PLAYER", "2.0"],
-    ["WEB_EMBEDDED_PLAYER", "2.20240101.00.00"],
-    ["WEB", "2.20240101.00.00"],
-  ];
+// ── Step 2: Extract ytInitialPlayerResponse from HTML ───────────────────────
+// YouTube embeds the full player data as a JS variable. We extract it with
+// bracket counting so we get the complete JSON regardless of size.
+function extractPlayerResponse(html: string): Record<string, unknown> {
+  const marker = "ytInitialPlayerResponse =";
+  const markerIdx = html.indexOf(marker);
+  if (markerIdx === -1) throw new Error("no_ytInitialPlayerResponse_marker");
 
-  let tracks: CaptionTrack[] = [];
-  const errs: string[] = [];
+  const jsonStart = html.indexOf("{", markerIdx + marker.length);
+  if (jsonStart === -1) throw new Error("no_json_start");
 
-  for (const [name, version] of clients) {
-    try {
-      const data = await getPlayerData(videoId, name, version);
-      const found: CaptionTrack[] =
-        (data?.captions as Record<string, unknown> | undefined)
-          ?.playerCaptionsTracklistRenderer as CaptionTrack[] | undefined ?? [];
-      // navigate the actual nested structure
-      const captionTracks = (
-        (data?.captions as { playerCaptionsTracklistRenderer?: { captionTracks?: CaptionTrack[] } } | undefined)
-          ?.playerCaptionsTracklistRenderer?.captionTracks
-      ) ?? [];
-      void found;
-      if (captionTracks.length > 0) {
-        tracks = captionTracks;
-        break;
-      }
-      errs.push(`${name}:no_tracks`);
-    } catch (e) {
-      errs.push(`${name}:${e instanceof Error ? e.message : String(e)}`);
+  // Walk forward counting braces to find the matching close
+  let depth = 0;
+  let i = jsonStart;
+  for (; i < Math.min(html.length, jsonStart + 3_000_000); i++) {
+    if (html[i] === "{") depth++;
+    else if (html[i] === "}") {
+      depth--;
+      if (depth === 0) break;
     }
   }
 
-  if (tracks.length === 0) throw new Error(`no_tracks(${errs.join(",")})`);
+  if (depth !== 0) throw new Error("json_brace_mismatch");
 
-  // Pick best language — prefer manual over auto-generated (asr)
+  const jsonStr = html.substring(jsonStart, i + 1);
+
+  let playerResponse: Record<string, unknown>;
+  try {
+    playerResponse = JSON.parse(jsonStr) as Record<string, unknown>;
+  } catch {
+    throw new Error("json_parse_failed");
+  }
+
+  return playerResponse;
+}
+
+// ── Step 3: Pull captionTracks from player response ──────────────────────────
+function getCaptionTracks(playerResponse: Record<string, unknown>): CaptionTrack[] {
+  type Captions = {
+    playerCaptionsTracklistRenderer?: {
+      captionTracks?: CaptionTrack[];
+    };
+  };
+
+  const captions = playerResponse.captions as Captions | undefined;
+  const tracks = captions?.playerCaptionsTracklistRenderer?.captionTracks ?? [];
+
+  if (tracks.length === 0) {
+    // Debug: surface what the captions key looks like
+    const preview = JSON.stringify(playerResponse.captions)?.slice(0, 200) ?? "undefined";
+    throw new Error(`no_caption_tracks(captions=${preview})`);
+  }
+
+  return tracks;
+}
+
+// ── Step 4: Pick the best language track ─────────────────────────────────────
+function pickTrack(tracks: CaptionTrack[], langCode: string): CaptionTrack {
   const base = langCode.split("-")[0];
+  // Prefer manually uploaded captions over auto-generated (kind: "asr")
   const manual = tracks.filter((t) => t.kind !== "asr");
   const pool = manual.length > 0 ? manual : tracks;
 
-  const track =
+  return (
     pool.find((t) => t.languageCode === langCode) ??
     pool.find((t) => t.languageCode.startsWith(base)) ??
     tracks.find((t) => t.languageCode.startsWith("en")) ??
-    tracks[0];
+    tracks[0]
+  );
+}
 
-  if (!track?.baseUrl) throw new Error("no_track_url");
+// ── Step 5: Fetch and parse the caption JSON ─────────────────────────────────
+async function fetchCaptionItems(track: CaptionTrack): Promise<TranscriptItem[]> {
+  if (!track?.baseUrl) throw new Error("no_baseUrl");
 
-  // Fetch the caption JSON from YouTube's CDN
-  const captionUrl = track.baseUrl + (track.baseUrl.includes("?") ? "&" : "?") + "fmt=json3";
-  const captionRes = await fetch(captionUrl);
-  if (!captionRes.ok) throw new Error(`caption_http_${captionRes.status}`);
+  const sep = track.baseUrl.includes("?") ? "&" : "?";
+  const url = `${track.baseUrl}${sep}fmt=json3`;
 
-  const captionText = await captionRes.text();
-  if (!captionText || captionText.trim().length < 5) throw new Error("caption_empty");
+  const res = await fetch(url, {
+    headers: { "User-Agent": "Mozilla/5.0" },
+  });
+  if (!res.ok) throw new Error(`caption_fetch_${res.status}`);
 
-  const captionData = JSON.parse(captionText) as {
-    events?: Array<{ tStartMs: number; dDurationMs?: number; segs?: Array<{ utf8?: string }> }>;
+  const text = await res.text();
+  if (!text || text.length < 10) throw new Error("caption_response_empty");
+
+  type CaptionEvent = {
+    tStartMs: number;
+    dDurationMs?: number;
+    segs?: Array<{ utf8?: string }>;
   };
-
+  const data = JSON.parse(text) as { events?: CaptionEvent[] };
   const items: TranscriptItem[] = [];
-  for (const ev of captionData.events ?? []) {
+
+  for (const ev of data.events ?? []) {
     if (!ev.segs) continue;
-    const text = ev.segs.map((s) => s.utf8 ?? "").join("").replace(/\n/g, " ").trim();
-    if (text) items.push({ text, offset: ev.tStartMs, duration: ev.dDurationMs ?? 0 });
+    const txt = ev.segs
+      .map((s) => s.utf8 ?? "")
+      .join("")
+      .replace(/\n/g, " ")
+      .trim();
+    if (txt) {
+      items.push({ text: txt, offset: ev.tStartMs, duration: ev.dDurationMs ?? 0 });
+    }
   }
 
-  if (items.length === 0) throw new Error("player_no_items");
+  if (items.length === 0) throw new Error("caption_events_empty");
   return items;
 }
 
-// ── Method 2: timedtext API (older but simpler) ──────────────────────────────
-async function fetchViaTimedtext(videoId: string, langCode: string): Promise<TranscriptItem[]> {
-  const base = langCode.split("-")[0];
-  // Try plain lang, then with asr kind (auto-generated)
-  const urls = [
-    `https://www.youtube.com/api/timedtext?v=${videoId}&lang=${base}&fmt=json3`,
-    `https://www.youtube.com/api/timedtext?v=${videoId}&lang=${base}&kind=asr&fmt=json3`,
-    `https://www.youtube.com/api/timedtext?v=${videoId}&lang=en&fmt=json3`,
-    `https://www.youtube.com/api/timedtext?v=${videoId}&lang=en&kind=asr&fmt=json3`,
-  ];
-
-  for (const url of urls) {
-    const res = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" } });
-    if (!res.ok) continue;
-    const text = await res.text();
-    if (!text || text.trim().length < 10 || text.trim()[0] !== "{") continue;
-    const data = JSON.parse(text) as { events?: Array<{ tStartMs: number; dDurationMs?: number; segs?: Array<{ utf8?: string }> }> };
-    const items: TranscriptItem[] = [];
-    for (const ev of data.events ?? []) {
-      if (!ev.segs) continue;
-      const t = ev.segs.map((s) => s.utf8 ?? "").join("").replace(/\n/g, " ").trim();
-      if (t) items.push({ text: t, offset: ev.tStartMs, duration: ev.dDurationMs ?? 0 });
-    }
-    if (items.length > 0) return items;
-  }
-
-  throw new Error("timedtext_all_failed");
-}
-
-// ── Main: try both methods ───────────────────────────────────────────────────
+// ── Main transcript fetcher ──────────────────────────────────────────────────
 async function fetchYouTubeTranscript(videoId: string, langCode: string): Promise<TranscriptItem[]> {
-  const errors: string[] = [];
-
-  try { return await fetchViaPlayer(videoId, langCode); }
-  catch (e) { errors.push(`Player:${e instanceof Error ? e.message : e}`); }
-
-  try { return await fetchViaTimedtext(videoId, langCode); }
-  catch (e) { errors.push(`Timedtext:${e instanceof Error ? e.message : e}`); }
-
-  throw new Error(`no_transcript | ${errors.join(" | ")}`);
+  const html = await fetchWatchPage(videoId);
+  const playerResponse = extractPlayerResponse(html);
+  const tracks = getCaptionTracks(playerResponse);
+  const track = pickTrack(tracks, langCode);
+  return fetchCaptionItems(track);
 }
 
-// ── SRT formatter ────────────────────────────────────────────────────────────
+// ── SRT helpers ──────────────────────────────────────────────────────────────
 function formatSrt(items: TranscriptItem[]): string {
-  return items.map((item, i) => {
-    const s = msToSrt(item.offset);
-    const e = msToSrt(item.offset + item.duration);
-    return `${i + 1}\n${s} --> ${e}\n${item.text}\n`;
-  }).join("\n");
+  return items
+    .map((item, i) => {
+      const s = msToSrt(item.offset);
+      const e = msToSrt(item.offset + item.duration);
+      return `${i + 1}\n${s} --> ${e}\n${item.text}\n`;
+    })
+    .join("\n");
 }
+
 function msToSrt(ms: number): string {
   const t = Math.floor(ms / 1000);
   return `${pad(Math.floor(t / 3600))}:${pad(Math.floor((t % 3600) / 60))}:${pad(t % 60)},${pad(ms % 1000, 3)}`;
 }
-function pad(n: number, len = 2): string { return String(n).padStart(len, "0"); }
+
+function pad(n: number, len = 2): string {
+  return String(n).padStart(len, "0");
+}
 
 // ── Route handler ────────────────────────────────────────────────────────────
 export async function POST(req: NextRequest) {
   const ip = req.headers.get("x-forwarded-for") ?? "unknown";
-  if (!checkRateLimit(ip))
-    return NextResponse.json({ error: "Too many requests. Please wait a minute." }, { status: 429 });
+  if (!checkRateLimit(ip)) {
+    return NextResponse.json(
+      { error: "Too many requests. Please wait a minute." },
+      { status: 429 }
+    );
+  }
 
-  let body: { type: "youtube" | "file"; url?: string; filename?: string; language: string; format: string; multiSpeaker: boolean; };
-  try { body = await req.json(); }
-  catch { return NextResponse.json({ error: "Invalid request body" }, { status: 400 }); }
+  let body: {
+    type: "youtube" | "file";
+    url?: string;
+    filename?: string;
+    language: string;
+    format: string;
+    multiSpeaker: boolean;
+  };
+
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
+  }
 
   const { type, url, filename, language, format, multiSpeaker } = body;
 
-  // ── YouTube ────────────────────────────────────────────────────────────────
+  // ── YouTube ──────────────────────────────────────────────────────────────
   if (type === "youtube") {
-    if (!url) return NextResponse.json({ error: "YouTube URL is required" }, { status: 400 });
+    if (!url) {
+      return NextResponse.json({ error: "YouTube URL is required" }, { status: 400 });
+    }
     const videoId = extractVideoId(url);
-    if (!videoId) return NextResponse.json({ error: "Invalid YouTube URL" }, { status: 400 });
+    if (!videoId) {
+      return NextResponse.json({ error: "Invalid YouTube URL" }, { status: 400 });
+    }
 
     const langCode = languageCodeMap[language] ?? "en";
 
     try {
       const items = await fetchYouTubeTranscript(videoId, langCode);
-      const transcript = format === "srt" ? formatSrt(items) : items.map((i) => i.text).join(" ").replace(/\s+/g, " ").trim();
-      return NextResponse.json({ transcript, wordCount: transcript.split(/\s+/).filter(Boolean).length, charCount: transcript.length });
+      const transcript =
+        format === "srt"
+          ? formatSrt(items)
+          : items.map((i) => i.text).join(" ").replace(/\s+/g, " ").trim();
+
+      return NextResponse.json({
+        transcript,
+        wordCount: transcript.split(/\s+/).filter(Boolean).length,
+        charCount: transcript.length,
+      });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error("[transcribe] YouTube failed:", msg);
-      // Expose full error chain temporarily for debugging
+      // Expose error for debugging until stable
       return NextResponse.json({ error: msg }, { status: 422 });
     }
   }
 
-  // ── File (Claude AI) ──────────────────────────────────────────────────────
+  // ── File (Claude AI) ─────────────────────────────────────────────────────
   if (type === "file") {
-    if (!filename) return NextResponse.json({ error: "Filename is required" }, { status: 400 });
+    if (!filename) {
+      return NextResponse.json({ error: "Filename is required" }, { status: 400 });
+    }
     const apiKey = process.env.ANTHROPIC_API_KEY;
-    if (!apiKey) return NextResponse.json({ error: "API key not configured" }, { status: 500 });
+    if (!apiKey) {
+      return NextResponse.json({ error: "API key not configured" }, { status: 500 });
+    }
 
     const client = new Anthropic({ apiKey });
-    const speakerNote = multiSpeaker ? " Use [Speaker 1], [Speaker 2] labels for different speakers." : "";
+    const speakerNote = multiSpeaker
+      ? " Use [Speaker 1], [Speaker 2] labels for different speakers."
+      : "";
     const prompt = `You are a professional transcription service. Generate a realistic, detailed transcription demo for an audio/video file named "${filename}".\n\nLanguage: ${language}\nFormat: ${format}\n${multiSpeaker ? "Mode: Multi-speaker" : "Mode: Single speaker"}\n\nCreate a high-quality, natural-sounding transcription of approximately 200-300 words.${speakerNote}\n\nOutput ONLY the transcript text, no explanations or meta-commentary.`;
 
     try {
-      const message = await client.messages.create({ model: "claude-haiku-4-5-20251001", max_tokens: 1024, messages: [{ role: "user", content: prompt }] });
-      const transcript = message.content[0].type === "text" ? message.content[0].text : "";
-      return NextResponse.json({ transcript, wordCount: transcript.split(/\s+/).filter(Boolean).length, charCount: transcript.length });
+      const message = await client.messages.create({
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: 1024,
+        messages: [{ role: "user", content: prompt }],
+      });
+      const transcript =
+        message.content[0].type === "text" ? message.content[0].text : "";
+      return NextResponse.json({
+        transcript,
+        wordCount: transcript.split(/\s+/).filter(Boolean).length,
+        charCount: transcript.length,
+      });
     } catch (error) {
       console.error("Anthropic API error:", error);
-      return NextResponse.json({ error: "Transcription failed. Please try again." }, { status: 500 });
+      return NextResponse.json(
+        { error: "Transcription failed. Please try again." },
+        { status: 500 }
+      );
     }
   }
 
