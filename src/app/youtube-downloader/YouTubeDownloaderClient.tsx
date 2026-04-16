@@ -41,7 +41,7 @@ export default function YouTubeDownloaderClient() {
   const [selectedFormat, setSelectedFormat] = useState<FormatOption>(formats[0]);
   const [quality, setQuality] = useState("1080p");
   const [loading, setLoading] = useState(false);
-  const [done, setDone] = useState(false);
+  const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
 
   const isValidYouTube = (v: string) =>
@@ -53,16 +53,33 @@ export default function YouTubeDownloaderClient() {
       return;
     }
     setLoading(true);
-    setDone(false);
-    await new Promise((r) => setTimeout(r, 2000));
-    setLoading(false);
-    setDone(true);
-    setToast({ message: `Ready to download as ${selectedFormat.ext.toUpperCase()}!`, type: "success" });
+    setDownloadUrl(null);
+
+    try {
+      const res = await fetch("/api/download", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          url,
+          format: selectedFormat.ext,
+          quality: selectedFormat.qualities ? quality : undefined,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Download failed");
+      setDownloadUrl(data.downloadUrl);
+      window.open(data.downloadUrl, "_blank");
+      setToast({ message: "Download started!", type: "success" });
+    } catch (err) {
+      setToast({ message: err instanceof Error ? err.message : "Download failed", type: "error" });
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleFormatChange = (fmt: FormatOption) => {
     setSelectedFormat(fmt);
-    setDone(false);
+    setDownloadUrl(null);
     if (fmt.qualities) setQuality(fmt.qualities[0]);
   };
 
@@ -105,7 +122,7 @@ export default function YouTubeDownloaderClient() {
                 <input
                   type="url"
                   value={url}
-                  onChange={(e) => { setUrl(e.target.value); setDone(false); }}
+                  onChange={(e) => { setUrl(e.target.value); setDownloadUrl(null); }}
                   onKeyDown={(e) => e.key === "Enter" && handleDownload()}
                   placeholder="https://www.youtube.com/watch?v=..."
                   disabled={loading}
@@ -176,17 +193,27 @@ export default function YouTubeDownloaderClient() {
               </button>
             </div>
 
-            {done && (
+            {downloadUrl && (
               <div className="px-6 pb-6">
-                <div className="bg-green-50 border border-green-200 rounded-xl p-4 flex items-center gap-3">
-                  <CheckCircle size={20} weight="fill" className="text-green-500 shrink-0" />
-                  <div>
-                    <p className="text-sm font-semibold text-green-800">Download ready!</p>
-                    <p className="text-xs text-green-600">
-                      Format: {selectedFormat.label.toUpperCase()}
-                      {selectedFormat.qualities ? ` • Quality: ${quality}` : " • Audio only"}
-                    </p>
+                <div className="bg-green-50 border border-green-200 rounded-xl p-4 flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <CheckCircle size={20} weight="fill" className="text-green-500 shrink-0" />
+                    <div>
+                      <p className="text-sm font-semibold text-green-800">Download started!</p>
+                      <p className="text-xs text-green-600">
+                        Format: {selectedFormat.label.toUpperCase()}
+                        {selectedFormat.qualities ? ` • Quality: ${quality}` : " • Audio only"}
+                      </p>
+                    </div>
                   </div>
+                  <a
+                    href={downloadUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="shrink-0 text-xs font-semibold text-primary-600 underline"
+                  >
+                    Click here if it didn&apos;t start
+                  </a>
                 </div>
               </div>
             )}
