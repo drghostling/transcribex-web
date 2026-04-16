@@ -46,12 +46,16 @@ export async function POST(req: NextRequest) {
   type CobaltResponse = { status: string; url?: string; error?: { code?: string }; picker?: { url: string }[] }
   let data: CobaltResponse;
   try {
+    const headers: Record<string, string> = {
+      "Accept": "application/json",
+      "Content-Type": "application/json",
+    };
+    const cobaltKey = process.env.COBALT_API_KEY;
+    if (cobaltKey) headers["Authorization"] = `Api-Key ${cobaltKey}`;
+
     const res = await fetch("https://api.cobalt.tools/", {
       method: "POST",
-      headers: {
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-      },
+      headers,
       body: JSON.stringify(cobaltPayload),
     });
     data = await res.json();
