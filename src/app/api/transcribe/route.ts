@@ -46,7 +46,7 @@ async function fetchYouTubeTranscript(
   apiKey: string
 ): Promise<TranscriptItem[]> {
   const params = new URLSearchParams({
-    videoId,
+    url: `https://www.youtube.com/watch?v=${videoId}`,
     lang: langCode,
     text: "false",
   });
