@@ -68,7 +68,7 @@ async function fetchWatchPage(videoId: string): Promise<string> {
 
   const html = await res.text();
 
-  // A real consent/sign-in redirect is tiny; the watch page is always >> 50 KB
+  // Real consent/sign-in redirects are tiny; the actual watch page is always >> 50 KB
   if (html.length < 50_000) {
     throw new Error(`watch_page_too_short(len=${html.length})`);
   }
