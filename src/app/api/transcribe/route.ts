@@ -68,13 +68,9 @@ async function fetchWatchPage(videoId: string): Promise<string> {
 
   const html = await res.text();
 
-  // Detect consent / sign-in redirect pages
-  if (
-    html.includes("consent.youtube.com") ||
-    html.includes("action=\"https://consent.youtube.com") ||
-    html.length < 50_000
-  ) {
-    throw new Error(`watch_page_blocked(len=${html.length})`);
+  // A real consent/sign-in redirect is tiny; the watch page is always >> 50 KB
+  if (html.length < 50_000) {
+    throw new Error(`watch_page_too_short(len=${html.length})`);
   }
 
   return html;
