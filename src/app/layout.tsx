@@ -38,12 +38,10 @@ export const metadata: Metadata = {
     type: "website",
     siteName: "TranscribeX",
     locale: "en_US",
-    images: [{ url: "/og.png", width: 1200, height: 630, alt: "TranscribeX — AI Transcription Tools" }],
   },
   twitter: {
     card: "summary_large_image",
     creator: "@transcribex",
-    images: ["/og.png"],
   },
   robots: {
     index: true,
