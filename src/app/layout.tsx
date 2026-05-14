@@ -61,6 +61,13 @@ export const viewport: Viewport = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className={plusJakarta.variable}>
+      <head>
+        <script
+          async
+          src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-2306331804665847"
+          crossOrigin="anonymous"
+        />
+      </head>
       <body>
         <Navbar />
         <main className="pt-16">{children}</main>
