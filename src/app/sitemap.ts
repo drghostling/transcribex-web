@@ -14,6 +14,9 @@ const pages = [
   { path: "/youtube-to-text", priority: 0.95, changeFrequency: "weekly" as const },
   { path: "/youtube-to-mp4", priority: 0.85, changeFrequency: "monthly" as const },
   { path: "/youtube-downloader", priority: 0.85, changeFrequency: "monthly" as const },
+  { path: "/privacy", priority: 0.3, changeFrequency: "yearly" as const },
+  { path: "/terms", priority: 0.3, changeFrequency: "yearly" as const },
+  { path: "/contact", priority: 0.4, changeFrequency: "yearly" as const },
 ];
 
 export default function sitemap(): MetadataRoute.Sitemap {
