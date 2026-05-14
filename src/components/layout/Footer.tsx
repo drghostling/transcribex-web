@@ -37,7 +37,7 @@ export default function Footer() {
               <a
                 href="https://twitter.com"
                 target="_blank"
-                rel="noopener noreferrer"
+                rel="noopener noreferrer nofollow"
                 className="w-8 h-8 rounded-lg bg-white/10 flex items-center justify-center hover:bg-white/20 transition-colors"
                 aria-label="Twitter"
               >
@@ -46,7 +46,7 @@ export default function Footer() {
               <a
                 href="https://github.com"
                 target="_blank"
-                rel="noopener noreferrer"
+                rel="noopener noreferrer nofollow"
                 className="w-8 h-8 rounded-lg bg-white/10 flex items-center justify-center hover:bg-white/20 transition-colors"
                 aria-label="GitHub"
               >
@@ -94,9 +94,9 @@ export default function Footer() {
             <p className="text-xs font-semibold uppercase tracking-widest text-white/40 mb-4">Company</p>
             <ul className="space-y-2.5">
               <li><Link href="/" className="text-sm text-white/70 hover:text-white transition-colors">Home</Link></li>
-              <li><a href="#" className="text-sm text-white/70 hover:text-white transition-colors">Privacy Policy</a></li>
-              <li><a href="#" className="text-sm text-white/70 hover:text-white transition-colors">Terms of Service</a></li>
-              <li><a href="#" className="text-sm text-white/70 hover:text-white transition-colors">Contact</a></li>
+              <li><Link href="/privacy" className="text-sm text-white/70 hover:text-white transition-colors">Privacy Policy</Link></li>
+              <li><Link href="/terms" className="text-sm text-white/70 hover:text-white transition-colors">Terms of Service</Link></li>
+              <li><Link href="/contact" className="text-sm text-white/70 hover:text-white transition-colors">Contact</Link></li>
             </ul>
           </div>
         </div>
